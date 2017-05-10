@@ -96,6 +96,8 @@ public:
   /*! \brief Get feature of specific split*/
   inline int split_feature(int split_idx) const { return split_feature_[split_idx]; }
 
+  inline double split_gain(int split_idx) const { return split_gain_[split_idx]; }
+
   /*!
   * \brief Shrinkage for the tree's output
   *        shrinkage rate (a.k.a learning rate) is used to tune the traning process
@@ -116,6 +118,9 @@ public:
 
   /*! \brief Serialize this object to json*/
   std::string ToJSON();
+
+  /*! \brief Serialize this object to if-else statement*/
+  std::string ToIfElse(int index, bool is_predict_leaf_index);
 
   template<typename T>
   static bool CategoricalDecision(T fval, T threshold) {
@@ -157,6 +162,9 @@ private:
 
   /*! \brief Serialize one node to json*/
   inline std::string NodeToJSON(int index);
+
+  /*! \brief Serialize one node to if-else statement*/
+  inline std::string NodeToIfElse(int index, bool is_predict_leaf_index);
 
   /*! \brief Number of max leaves*/
   int max_leaves_;

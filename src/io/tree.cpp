@@ -329,7 +329,11 @@ std::string Tree::ToJSON() {
   str_buf << "\"num_leaves\":" << num_leaves_ << "," << std::endl;
   str_buf << "\"shrinkage\":" << shrinkage_ << "," << std::endl;
   str_buf << "\"has_categorical\":" << (has_categorical_ ? 1 : 0) << "," << std::endl;
-  str_buf << "\"tree_structure\":" << NodeToJSON(0) << std::endl;
+  if (num_leaves_ == 1) {
+    str_buf << "\"tree_structure\":" << NodeToJSON(-1) << std::endl;
+  } else {
+    str_buf << "\"tree_structure\":" << NodeToJSON(0) << std::endl;
+  }
 
   return str_buf.str();
 }
@@ -359,6 +363,54 @@ std::string Tree::NodeToJSON(int index) {
     str_buf << "\"leaf_value\":" << leaf_value_[index] << "," << std::endl;
     str_buf << "\"leaf_count\":" << leaf_count_[index] << std::endl;
     str_buf << "}";
+  }
+
+  return str_buf.str();
+}
+
+std::string Tree::ToIfElse(int index, bool is_predict_leaf_index) {
+  std::stringstream str_buf;
+  str_buf << "double PredictTree" << index;
+  if (is_predict_leaf_index) {
+    str_buf << "Leaf";
+  }
+  str_buf << "(const double* arr) { ";
+  if (num_leaves_ == 1) {
+    str_buf << "return 0";
+  } else {
+    str_buf << NodeToIfElse(0, is_predict_leaf_index);
+  }
+  str_buf << " }" << std::endl;
+  return str_buf.str();
+}
+
+std::string Tree::NodeToIfElse(int index, bool is_predict_leaf_index) {
+  std::stringstream str_buf;
+  str_buf << std::setprecision(std::numeric_limits<double>::digits10 + 2);
+  if (index >= 0) {
+    // non-leaf
+    str_buf << "if ( arr[" << split_feature_[index] << "] ";
+    if (decision_type_[index] == 0) {
+      str_buf << "<";
+    } else {
+      str_buf << "=";
+    }
+    str_buf << "= " << threshold_[index] << " ) { ";
+    // left subtree
+    str_buf << NodeToIfElse(left_child_[index], is_predict_leaf_index);
+    str_buf << " } else { ";
+    // right subtree
+    str_buf << NodeToIfElse(right_child_[index], is_predict_leaf_index);
+    str_buf << " }";
+  } else {
+    // leaf
+    str_buf << "return ";
+    if (is_predict_leaf_index) {
+      str_buf << ~index;
+    } else {
+      str_buf << leaf_value_[~index];
+    }
+    str_buf << ";";
   }
 
   return str_buf.str();

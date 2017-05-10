@@ -22,7 +22,7 @@ def _load_lib():
     """Load LightGBM Library."""
     lib_path = find_lib_path()
     if len(lib_path) == 0:
-        raise Exception("cannot find LightGBM library")
+        return None
     lib = ctypes.cdll.LoadLibrary(lib_path[0])
     lib.LGBM_GetLastError.restype = ctypes.c_char_p
     return lib
@@ -1109,7 +1109,7 @@ class Dataset(object):
 
     def get_group(self):
         """
-        Get the initial score of the Dataset.
+        Get the group of the Dataset.
 
         Returns
         -------
@@ -1653,10 +1653,11 @@ class Booster(object):
 
         def dfs(root):
             if "split_feature" in root:
-                if importance_type == 'split':
-                    ret[root["split_feature"]] += 1
-                elif importance_type == 'gain':
-                    ret[root["split_feature"]] += root["split_gain"]
+                if root['split_gain'] > 0:
+                    if importance_type == 'split':
+                        ret[root["split_feature"]] += 1
+                    elif importance_type == 'gain':
+                        ret[root["split_feature"]] += root["split_gain"]
                 dfs(root["left_child"])
                 dfs(root["right_child"])
         for tree in dump_model["tree_info"]:

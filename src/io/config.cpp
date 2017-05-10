@@ -35,6 +35,7 @@ std::unordered_map<std::string, std::string> ConfigBase::Str2Map(const char* par
 void OverallConfig::Set(const std::unordered_map<std::string, std::string>& params) {
   // load main config types
   GetInt(params, "num_threads", &num_threads);
+  GetString(params, "convert_model_language", &convert_model_language);
 
   // generate seeds by seed.
   if (GetInt(params, "seed", &seed)) {
@@ -129,6 +130,8 @@ void OverallConfig::GetTaskType(const std::unordered_map<std::string, std::strin
     } else if (value == std::string("predict") || value == std::string("prediction")
       || value == std::string("test")) {
       task_type = TaskType::kPredict;
+    } else if (value == std::string("convert_model")) {
+      task_type = TaskType::kConvertModel;
     } else {
       Log::Fatal("Unknown task type %s", value.c_str());
     }
@@ -207,8 +210,10 @@ void IOConfig::Set(const std::unordered_map<std::string, std::string>& params) {
   GetBool(params, "enable_load_from_binary_file", &enable_load_from_binary_file);
   GetBool(params, "is_predict_raw_score", &is_predict_raw_score);
   GetBool(params, "is_predict_leaf_index", &is_predict_leaf_index);
+  GetInt(params, "snapshot_freq", &snapshot_freq);
   GetString(params, "output_model", &output_model);
   GetString(params, "input_model", &input_model);
+  GetString(params, "convert_model", &convert_model);
   GetString(params, "output_result", &output_result);
   std::string tmp_str = "";
   if (GetString(params, "valid_data", &tmp_str)) {
@@ -221,7 +226,8 @@ void IOConfig::Set(const std::unordered_map<std::string, std::string>& params) {
   GetString(params, "ignore_column", &ignore_column);
   GetString(params, "categorical_column", &categorical_column);
   GetInt(params, "min_data_in_leaf", &min_data_in_leaf);
-  GetInt(params, "min_dato_in_bin", &min_data_in_bin);
+  GetInt(params, "min_data_in_bin", &min_data_in_bin);
+  CHECK(min_data_in_bin > 0);
   GetDouble(params, "max_conflict_rate", &max_conflict_rate);
   GetBool(params, "enable_bundle", &enable_bundle);
   GetBool(params, "adjacent_bundle", &adjacent_bundle);

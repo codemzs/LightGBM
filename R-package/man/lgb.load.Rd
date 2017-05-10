@@ -4,16 +4,20 @@
 \alias{lgb.load}
 \title{Load LightGBM model}
 \usage{
-lgb.load(filename)
+lgb.load(filename = NULL, model_str = NULL)
 }
 \arguments{
 \item{filename}{path of model file}
+
+\item{model_str}{a str containing the model}
 }
 \value{
 booster
 }
 \description{
-Load LightGBM model from saved model file
+Load LightGBM model from saved model file or string
+Load LightGBM takes in either a file path or model string
+If both are provided, Load will default to loading from file
 }
 \examples{
 \dontrun{
@@ -35,6 +39,7 @@ model <- lgb.train(params,
                    early_stopping_rounds = 10)
 lgb.save(model, "model.txt")
 load_booster <- lgb.load("model.txt")
+load_booster_from_str <- lgb.load(model$raw)
 }
 
 }

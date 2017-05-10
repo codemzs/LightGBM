@@ -18,7 +18,7 @@ public:
   explicit DenseBinIterator(const DenseBin<VAL_T>* bin_data, uint32_t min_bin, uint32_t max_bin, uint32_t default_bin)
     : bin_data_(bin_data), min_bin_(static_cast<VAL_T>(min_bin)),
     max_bin_(static_cast<VAL_T>(max_bin)),
-    default_bin_(static_cast<uint8_t>(default_bin)) {
+    default_bin_(static_cast<VAL_T>(default_bin)) {
     if (default_bin_ == 0) {
       bias_ = 1;
     } else {
@@ -258,7 +258,7 @@ public:
   }
 
   void CopySubset(const Bin* full_bin, const data_size_t* used_indices, data_size_t num_used_indices) override {
-    auto other_bin = reinterpret_cast<const DenseBin<VAL_T>*>(full_bin);
+    auto other_bin = dynamic_cast<const DenseBin<VAL_T>*>(full_bin);
     for (int i = 0; i < num_used_indices; ++i) {
       data_[i] = other_bin->data_[used_indices[i]];
     }

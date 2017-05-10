@@ -166,16 +166,16 @@ void GBDT::ResetTrainingData(const BoostingConfig* config, const Dataset* train_
     if (objective_function_ != nullptr && objective_function_->SkipEmptyClass()) {
       CHECK(num_tree_per_iteration_ == num_class_);
       // + 1 here for the binary classification
-      class_default_output_ = std::vector<double>(num_tree_per_iteration_ + 1, 0.0f);
-      std::vector<data_size_t> cnt_per_class(num_tree_per_iteration_ + 1, 0);
+      class_default_output_ = std::vector<double>(num_tree_per_iteration_, 0.0f);
       auto label = train_data_->metadata().label();
-      for (int i = 0; i < num_data_; ++i) {
-		  int index = static_cast<int>(label[i]);
-		  //Check if user gave a multi-class dataset for a binary class problem.
-		  if (index <= num_tree_per_iteration_)
-			  ++cnt_per_class[static_cast<int>(label[i])];
-      }
       if (num_tree_per_iteration_ > 1) {
+        // multi-class
+        std::vector<data_size_t> cnt_per_class(num_tree_per_iteration_, 0);
+        for (data_size_t i = 0; i < num_data_; ++i) {
+          int index = static_cast<int>(label[i]);
+          CHECK(index < num_tree_per_iteration_);
+          ++cnt_per_class[index];
+        }
         for (int i = 0; i < num_tree_per_iteration_; ++i) {
           if (cnt_per_class[i] == num_data_) {
             class_need_train_[i] = false;
@@ -186,11 +186,17 @@ void GBDT::ResetTrainingData(const BoostingConfig* config, const Dataset* train_
           }
         }
       } else {
-        // binary classification. 
-        if (cnt_per_class[1] == 0) {
+        // binary class
+        data_size_t cnt_pos = 0;
+        for (data_size_t i = 0; i < num_data_; ++i) {
+          if (label[i] > 0) {
+            ++cnt_pos;
+          }
+        }
+        if (cnt_pos == 0) {
           class_need_train_[0] = false;
           class_default_output_[0] = -std::log(1.0f / kEpsilon - 1.0f);
-        } else if (cnt_per_class[1] == num_data_) {
+        } else if (cnt_pos == num_data_) {
           class_need_train_[0] = false;
           class_default_output_[0] = -std::log(kEpsilon);
         }
@@ -305,7 +311,6 @@ void GBDT::Bagging(int iter) {
     }
     OMP_THROW_EX();
     bag_data_cnt_ = left_cnt;
-    CHECK(bag_data_indices_[bag_data_cnt_ - 1] > bag_data_indices_[bag_data_cnt_]);
     Log::Debug("Re-bagging, using %d data to train", bag_data_cnt_);
     // set bagging data to tree learner
     if (!is_use_subset_) {
@@ -348,7 +353,7 @@ bool GBDT::TrainOneIter(const score_t* gradient, const score_t* hessian, bool is
     }
     init_score /= num_data_;
     std::unique_ptr<Tree> new_tree(new Tree(2));
-    new_tree->Split(0, 0, BinType::NumericalBin, 0, 0, 0, init_score, init_score, 0, num_data_, 1);
+    new_tree->Split(0, 0, BinType::NumericalBin, 0, 0, 0, init_score, init_score, 0, num_data_, -1);
     train_score_updater_->AddScore(init_score, 0);
     for (auto& score_updater : valid_score_updater_) {
       score_updater->AddScore(init_score, 0);
@@ -427,7 +432,7 @@ bool GBDT::TrainOneIter(const score_t* gradient, const score_t* hessian, bool is
       if (!class_need_train_[cur_tree_id] && models_.size() < static_cast<size_t>(num_tree_per_iteration_)) {
         auto output = class_default_output_[cur_tree_id];
         new_tree->Split(0, 0, BinType::NumericalBin, 0, 0, 0,
-                        output, output, 0, num_data_, 1);
+                        output, output, 0, num_data_, -1);
         train_score_updater_->AddScore(output, cur_tree_id);
         for (auto& score_updater : valid_score_updater_) {
           score_updater->AddScore(output, cur_tree_id);
@@ -694,6 +699,128 @@ std::string GBDT::DumpModel(int num_iteration) const {
   return str_buf.str();
 }
 
+std::string GBDT::ModelToIfElse(int num_iteration) const {
+  std::stringstream str_buf;
+
+  str_buf << "#include \"gbdt.h\"" << std::endl;
+  str_buf << "#include <LightGBM/utils/openmp_wrapper.h>" << std::endl;
+  str_buf << "#include <LightGBM/utils/common.h>" << std::endl;
+  str_buf << "#include <LightGBM/objective_function.h>" << std::endl;
+  str_buf << "#include <LightGBM/metric.h>" << std::endl;
+  str_buf << "#include <ctime>" << std::endl;
+  str_buf << "#include <sstream>" << std::endl;
+  str_buf << "#include <chrono>" << std::endl;
+  str_buf << "#include <string>" << std::endl;
+  str_buf << "#include <vector>" << std::endl;
+  str_buf << "#include <utility>" << std::endl;
+  str_buf << "namespace LightGBM {" << std::endl;
+
+  int num_used_model = static_cast<int>(models_.size());
+  if (num_iteration > 0) {
+    num_iteration += boost_from_average_ ? 1 : 0;
+    num_used_model = std::min(num_iteration * num_tree_per_iteration_, num_used_model);
+  }
+
+  // PredictRaw
+  for (int i = 0; i < num_used_model; ++i) {
+    str_buf << models_[i]->ToIfElse(i, false) << std::endl;
+  }
+
+  str_buf << "double (*PredictTreePtr[])(const double*) = { ";
+  for (int i = 0; i < num_used_model; ++i) {
+    if (i > 0) {
+      str_buf << " , ";
+    }
+    str_buf << "PredictTree" << i;
+  }
+  str_buf << " };" << std::endl << std::endl;
+
+  std::stringstream pred_str_buf;
+
+  pred_str_buf << "\t" << "if (num_threads_ <= num_tree_per_iteration_) {" << std::endl;
+  pred_str_buf << "\t\t" << "#pragma omp parallel for schedule(static)" << std::endl;
+  pred_str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << std::endl;
+  pred_str_buf << "\t\t\t" << "for (int i = 0; i < num_iteration_for_pred_; ++i) {" << std::endl;
+  pred_str_buf << "\t\t\t\t" << "output[k] += (*PredictTreePtr[i * num_tree_per_iteration_ + k])(features);" << std::endl;
+  pred_str_buf << "\t\t\t" << "}" << std::endl;
+  pred_str_buf << "\t\t" << "}" << std::endl;
+  pred_str_buf << "\t" << "} else {" << std::endl;
+  pred_str_buf << "\t\t" << "for (int k = 0; k < num_tree_per_iteration_; ++k) {" << std::endl;
+  pred_str_buf << "\t\t\t" << "double t = 0.0f;" << std::endl;
+  pred_str_buf << "\t\t\t" << "#pragma omp parallel for schedule(static) reduction(+:t)" << std::endl;
+  pred_str_buf << "\t\t\t" << "for (int i = 0; i < num_iteration_for_pred_; ++i) {" << std::endl;
+  pred_str_buf << "\t\t\t\t" << "t += (*PredictTreePtr[i * num_tree_per_iteration_ + k])(features);" << std::endl;
+  pred_str_buf << "\t\t\t" << "}" << std::endl;
+  pred_str_buf << "\t\t\t" << "output[k] = t;" << std::endl;
+  pred_str_buf << "\t\t" << "}" << std::endl;
+  pred_str_buf << "\t" << "}" << std::endl;
+
+  str_buf << "void GBDT::PredictRaw(const double* features, double *output) const {" << std::endl;
+  str_buf << pred_str_buf.str();
+  str_buf << "}" << std::endl;
+  str_buf << std::endl;
+
+  // Predict
+  str_buf << "void GBDT::Predict(const double* features, double *output) const {" << std::endl;
+  str_buf << pred_str_buf.str();
+  str_buf << "\t" << "if (objective_function_ != nullptr) {" << std::endl;
+  str_buf << "\t\t" << "objective_function_->ConvertOutput(output, output);" << std::endl;
+  str_buf << "\t" << "}" << std::endl;
+  str_buf << "}" << std::endl;
+  str_buf << std::endl;
+
+  // PredictLeafIndex
+  for (int i = 0; i < num_used_model; ++i) {
+    str_buf << models_[i]->ToIfElse(i, true) << std::endl;
+  }
+
+  str_buf << "double (*PredictTreeLeafPtr[])(const double*) = { ";
+  for (int i = 0; i < num_used_model; ++i) {
+    if (i > 0) {
+      str_buf << " , ";
+    }
+    str_buf << "PredictTree" << i << "Leaf";
+  }
+  str_buf << " };" << std::endl << std::endl;
+
+  str_buf << "void GBDT::PredictLeafIndex(const double* features, double *output) const {" << std::endl;
+  str_buf << "\t" << "int total_tree = num_iteration_for_pred_ * num_tree_per_iteration_;" << std::endl;
+  str_buf << "\t" << "#pragma omp parallel for schedule(static)" << std::endl;
+  str_buf << "\t" << "for (int i = 0; i < total_tree; ++i) {" << std::endl;
+  str_buf << "\t\t" << "output[i] = (*PredictTreeLeafPtr[i])(features);" << std::endl;
+  str_buf << "\t" << "}" << std::endl;
+  str_buf << "}" << std::endl;
+
+  str_buf << "}  // namespace LightGBM" << std::endl;
+
+  return str_buf.str();
+}
+
+bool GBDT::SaveModelToIfElse(int num_iteration, const char* filename) const {
+  /*! \brief File to write models */
+  std::ofstream output_file;
+  std::ifstream ifs(filename);
+  if (ifs.good()) {
+    std::string origin((std::istreambuf_iterator<char>(ifs)),
+                       (std::istreambuf_iterator<char>()));
+    output_file.open(filename);
+    output_file << "#define USE_HARD_CODE 0" << std::endl;
+    output_file << "#ifndef USE_HARD_CODE" << std::endl;
+    output_file << origin << std::endl;
+    output_file << "#else" << std::endl;
+    output_file << ModelToIfElse(num_iteration);
+    output_file << "#endif" << std::endl;
+  } else {
+    output_file.open(filename);
+    output_file << ModelToIfElse(num_iteration);
+  }
+
+  ifs.close();
+  output_file.close();
+
+  return (bool)output_file;
+}
+
 std::string GBDT::SaveModelToString(int num_iteration) const {
   std::stringstream ss;
 
@@ -855,7 +982,9 @@ std::vector<std::pair<size_t, std::string>> GBDT::FeatureImportance() const {
   std::vector<size_t> feature_importances(max_feature_idx_ + 1, 0);
   for (size_t iter = 0; iter < models_.size(); ++iter) {
     for (int split_idx = 0; split_idx < models_[iter]->num_leaves() - 1; ++split_idx) {
-      ++feature_importances[models_[iter]->split_feature(split_idx)];
+      if (models_[iter]->split_gain(split_idx) > 0) {
+        ++feature_importances[models_[iter]->split_feature(split_idx)];
+      }
     }
   }
   // store the importance first
@@ -872,57 +1001,6 @@ std::vector<std::pair<size_t, std::string>> GBDT::FeatureImportance() const {
     return lhs.first > rhs.first;
   });
   return pairs;
-}
-
-void GBDT::PredictRaw(const double* features, double* output) const {
-  if (num_threads_ <= num_tree_per_iteration_) {
-    #pragma omp parallel for schedule(static)
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
-      for (int i = 0; i < num_iteration_for_pred_; ++i) {
-        output[k] += models_[i * num_tree_per_iteration_ + k]->Predict(features);
-      }
-    }
-  } else {
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
-      double t = 0.0f;
-      #pragma omp parallel for schedule(static) reduction(+:t)
-      for (int i = 0; i < num_iteration_for_pred_; ++i) {
-        t += models_[i * num_tree_per_iteration_ + k]->Predict(features);
-      }
-      output[k] = t;
-    }
-  }
-}
-
-void GBDT::Predict(const double* features, double* output) const {
-  if (num_threads_ <= num_tree_per_iteration_) {
-    #pragma omp parallel for schedule(static)
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
-      for (int i = 0; i < num_iteration_for_pred_; ++i) {
-        output[k] += models_[i * num_tree_per_iteration_ + k]->Predict(features);
-      }
-    }
-  } else {
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
-      double t = 0.0f;
-      #pragma omp parallel for schedule(static) reduction(+:t)
-      for (int i = 0; i < num_iteration_for_pred_; ++i) {
-        t += models_[i * num_tree_per_iteration_ + k]->Predict(features);
-      }
-      output[k] = t;
-    }
-  }
-  if (objective_function_ != nullptr) {
-    objective_function_->ConvertOutput(output, output);
-  }
-}
-
-void GBDT::PredictLeafIndex(const double* features, double* output) const {
-  int total_tree = num_iteration_for_pred_ * num_tree_per_iteration_;
-  #pragma omp parallel for schedule(static)
-  for (int i = 0; i < total_tree; ++i) {
-    output[i] = models_[i]->PredictLeafIndex(features);
-  }
 }
 
 }  // namespace LightGBM
